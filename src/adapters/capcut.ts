@@ -74,6 +74,131 @@ export function getDefaultCapCutDraftsDir(): string | null {
   return null;
 }
 
+export function getDefaultCapCutAudioCacheDir(): string | null {
+  if (process.platform === 'win32' && process.env.LOCALAPPDATA) {
+    return path.join(
+      process.env.LOCALAPPDATA,
+      'CapCut',
+      'User Data',
+      'Cache',
+      'music'
+    );
+  }
+  return null;
+}
+
+function parseCapCutBeatFile(raw: string): {
+  beatsSec: number[];
+  downbeatsSec: number[];
+} {
+  const timeMatch = raw.match(/["']?time["']?\s*:\s*\[([^\]]*)\]/);
+  if (!timeMatch) return { beatsSec: [], downbeatsSec: [] };
+
+  const timesMs = timeMatch[1]
+    .split(',')
+    .map((s) => Number(s.trim()))
+    .filter((n) => Number.isFinite(n));
+
+  const valueMatch = raw.match(/["']?value["']?\s*:\s*\[([^\]]*)\]/);
+  const values = valueMatch
+    ? valueMatch[1]
+        .split(',')
+        .map((s) => Number(s.trim()))
+        .filter((n) => Number.isFinite(n))
+    : [];
+
+  const beatsSec = timesMs.map((ms) => Number((ms / 1000).toFixed(3)));
+  const downbeatsSec: number[] = [];
+  for (let i = 0; i < beatsSec.length; i++) {
+    if (values[i] === 1) downbeatsSec.push(beatsSec[i]);
+  }
+
+  return { beatsSec, downbeatsSec };
+}
+
+export async function listCapCutCachedAudio(params: {
+  cacheDir?: string;
+  limit?: number;
+  beatPreviewCount?: number;
+} = {}) {
+  const dir = params.cacheDir
+    ? resolveSafePath(params.cacheDir)
+    : getDefaultCapCutAudioCacheDir();
+  if (!dir || !(await fileExists(dir))) {
+    throw new Error('CapCut cached music directory not found. Pass cacheDir explicitly.');
+  }
+
+  const audioExts = new Set(['.mp3', '.wav', '.m4a', '.aac', '.ogg', '.flac']);
+  const entries = await readdir(dir, { withFileTypes: true });
+  const audioCandidates: Array<{ name: string; fullPath: string; mtimeMs: number; sizeBytes: number }> = [];
+
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    const ext = path.extname(entry.name).toLowerCase();
+    if (!audioExts.has(ext)) continue;
+    const fullPath = path.join(dir, entry.name);
+    const st = await stat(fullPath);
+    audioCandidates.push({
+      name: entry.name,
+      fullPath,
+      mtimeMs: st.mtimeMs,
+      sizeBytes: st.size
+    });
+  }
+
+  audioCandidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  const limit = Math.min(100, Math.max(1, params.limit ?? 25));
+  const previewCount = Math.min(200, Math.max(5, params.beatPreviewCount ?? 40));
+  const selected = audioCandidates.slice(0, limit);
+
+  const tracks = [];
+  for (const item of selected) {
+    const stem = path.basename(item.name, path.extname(item.name));
+    const beatFile = path.join(dir, `${stem}.beat`);
+    const hasBeatFile = await fileExists(beatFile);
+    let beatsSec: number[] = [];
+    let downbeatsSec: number[] = [];
+    if (hasBeatFile) {
+      try {
+        const beatRaw = await readFile(beatFile, 'utf8');
+        const parsed = parseCapCutBeatFile(beatRaw);
+        beatsSec = parsed.beatsSec;
+        downbeatsSec = parsed.downbeatsSec;
+      } catch {
+        // Ignore malformed .beat cache files
+      }
+    }
+
+    let durationSec: number | null = null;
+    try {
+      const probed = await probeMedia(item.fullPath);
+      durationSec = probed.durationSec;
+    } catch {
+      // Non-fatal if ffprobe unavailable
+    }
+
+    tracks.push({
+      id: stem,
+      fileName: item.name,
+      path: item.fullPath,
+      sizeBytes: item.sizeBytes,
+      modifiedAt: new Date(item.mtimeMs).toISOString(),
+      durationSec,
+      hasBeatFile,
+      beatCount: beatsSec.length,
+      downbeatsSec: downbeatsSec.slice(0, previewCount),
+      beatsSecPreview: beatsSec.slice(0, previewCount)
+    });
+  }
+
+  return {
+    cacheDir: dir,
+    totalAudioFiles: audioCandidates.length,
+    returnedCount: tracks.length,
+    tracks
+  };
+}
+
 export async function listCapCutDrafts(customDir?: string): Promise<{
   draftsDir: string;
   drafts: CapCutDraftSummary[];

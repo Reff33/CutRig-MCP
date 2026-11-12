@@ -12,6 +12,7 @@ import {
   addTextToCapCutDraft,
   createCapCutDraft,
   insertClipsToCapCutDraft,
+  listCapCutCachedAudio,
   listCapCutDrafts
 } from '../dist/adapters/capcut.js';
 
@@ -39,7 +40,8 @@ test('MCP server registers all Phase 2 caption & CapCut tools', async () => {
     'cutrig_capcut_list_drafts',
     'cutrig_capcut_create_draft',
     'cutrig_capcut_insert_clips',
-    'cutrig_capcut_add_text'
+    'cutrig_capcut_add_text',
+    'cutrig_capcut_list_audio'
   ]) {
     assert.ok(names.includes(expected), `Missing Phase 2 tool: ${expected}`);
   }
@@ -162,6 +164,26 @@ test(
       assert.equal(rootMeta.all_draft_store.length, 1);
       assert.equal(rootMeta.all_draft_store[0].draft_name, 'Promo_Test');
       assert.ok(rootMeta.all_draft_store[0].tm_duration >= 1_900_000);
+
+      // 4. CapCut cached audio & companion .beat parser
+      const cacheMusicDir = path.join(tmp, 'capcut_cache_music');
+      mkdirSync(cacheMusicDir, { recursive: true });
+      const cachedMp3 = path.join(cacheMusicDir, 'abc123track.mp3');
+      execFileSync(
+        'ffmpeg',
+        ['-y', '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=44100:duration=2', cachedMp3],
+        { stdio: 'ignore', windowsHide: true }
+      );
+      writeFileSync(
+        path.join(cacheMusicDir, 'abc123track.beat'),
+        '{energy:[12.5,33.1,44.0],time:[500,1000,1500],value:[1,2,1]}',
+        'utf8'
+      );
+      const cachedAudio = await listCapCutCachedAudio({ cacheDir: cacheMusicDir });
+      assert.equal(cachedAudio.returnedCount, 1);
+      assert.equal(cachedAudio.tracks[0].hasBeatFile, true);
+      assert.equal(cachedAudio.tracks[0].beatCount, 3);
+      assert.deepEqual(cachedAudio.tracks[0].downbeatsSec, [0.5, 1.5]);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

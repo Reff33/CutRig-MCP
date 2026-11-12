@@ -9,6 +9,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { createCutRigServer } from '../dist/server.js';
 import {
   concatClips,
+  detectBeats,
   extractPreviewFrames,
   mixAudio,
   probeMedia,
@@ -41,7 +42,8 @@ test('MCP server registers all Phase 1 FFmpeg tools', async () => {
     'cutrig_concat',
     'cutrig_reframe',
     'cutrig_audio_mix',
-    'cutrig_preview_frames'
+    'cutrig_preview_frames',
+    'cutrig_detect_beats'
   ]) {
     assert.ok(names.includes(expected), `Missing tool: ${expected}`);
   }
@@ -188,6 +190,25 @@ test(
       });
       assert.equal(frames.count, 3);
       assert.ok(frames.files.every((f) => existsSync(f)));
+
+      // 7. Beat detection on synthetic 120 BPM pulse track (every 0.5s)
+      const pulseWav = path.join(tmp, 'pulse_120bpm.wav');
+      execFileSync(
+        'ffmpeg',
+        [
+          '-y',
+          '-f', 'lavfi',
+          '-i', 'aevalsrc=0.8*sin(2*PI*220*t)*lt(mod(t\\,0.5)\\,0.06):s=48000:d=3',
+          pulseWav
+        ],
+        { stdio: 'ignore', windowsHide: true }
+      );
+      const beats = await detectBeats({ inputPath: pulseWav, workspaceRoot: tmp });
+      assert.ok(beats.beatCount >= 4, `Expected >=4 beats, got ${beats.beatCount}`);
+      assert.ok(
+        beats.estimatedBpm !== null && beats.estimatedBpm >= 110 && beats.estimatedBpm <= 130,
+        `Expected ~120 BPM, got ${beats.estimatedBpm}`
+      );
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

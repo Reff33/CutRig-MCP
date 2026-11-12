@@ -2,6 +2,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import {
   concatClips,
+  detectBeats,
   extractPreviewFrames,
   mixAudio,
   probeMedia,
@@ -122,5 +123,21 @@ export function registerFfmpegTools(server: McpServer): void {
       }
     },
     async (args) => okJson(await extractPreviewFrames(args))
+  );
+
+  server.registerTool(
+    'cutrig_detect_beats',
+    {
+      title: 'Detect Audio Beats',
+      description:
+        'Analyze an audio/video file with FFmpeg PCM onset detection to return beat timestamps (seconds) and estimated BPM for beat-synced cuts and transitions.',
+      inputSchema: {
+        inputPath: z.string(),
+        minGapSec: z.number().min(0.15).max(2).optional().describe('Minimum seconds between detected beats (default 0.32)'),
+        maxBeats: z.number().int().min(1).max(500).optional(),
+        sensitivity: z.number().min(1.1).max(4).optional().describe('Peak threshold multiplier (lower = more beats, default 1.65)')
+      }
+    },
+    async (args) => okJson(await detectBeats(args))
   );
 }

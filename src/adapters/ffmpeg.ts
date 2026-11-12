@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process';
 import { mkdir, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { runCommand } from '../utils/exec.js';
@@ -437,4 +438,145 @@ export async function extractPreviewFrames(params: {
     .map((f) => path.join(outDir, f));
 
   return { outputDir: outDir, count: files.length, files };
+}
+
+function readPcmS16Mono(inputPath: string, sampleRate = 8000, maxSec = 300): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      'ffmpeg',
+      [
+        '-v',
+        'error',
+        '-t',
+        String(maxSec),
+        '-i',
+        inputPath,
+        '-vn',
+        '-ac',
+        '1',
+        '-ar',
+        String(sampleRate),
+        '-f',
+        's16le',
+        'pipe:1'
+      ],
+      { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }
+    );
+
+    const chunks: Buffer[] = [];
+    const errChunks: Buffer[] = [];
+    child.stdout.on('data', (c: Buffer) => chunks.push(c));
+    child.stderr.on('data', (c: Buffer) => errChunks.push(c));
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code !== 0) {
+        reject(new Error(`ffmpeg PCM decode failed: ${Buffer.concat(errChunks).toString('utf8').trim()}`));
+        return;
+      }
+      resolve(Buffer.concat(chunks));
+    });
+  });
+}
+
+export async function detectBeats(params: {
+  inputPath: string;
+  minGapSec?: number;
+  maxBeats?: number;
+  sensitivity?: number;
+  workspaceRoot?: string;
+}) {
+  const input = resolveSafePath(params.inputPath, params.workspaceRoot);
+  const probe = await probeMedia(input, params.workspaceRoot);
+  if (!probe.audio) {
+    throw new Error(`Input file has no audio stream: ${input}`);
+  }
+
+  const sampleRate = 8000;
+  const frameSamples = 160; // 20 ms hop
+  const frameSec = frameSamples / sampleRate;
+  const minGapSec = params.minGapSec ?? 0.32;
+  const maxBeats = params.maxBeats ?? 200;
+  const thresholdMul = params.sensitivity ?? 1.65;
+
+  const pcm = await readPcmS16Mono(input, sampleRate);
+  const totalSamples = Math.floor(pcm.length / 2);
+  const frameCount = Math.floor(totalSamples / frameSamples);
+  if (frameCount < 4) {
+    return {
+      path: input,
+      durationSec: probe.durationSec,
+      estimatedBpm: null,
+      beatCount: 0,
+      beatsSec: [],
+      intervalsSec: []
+    };
+  }
+
+  const energies = new Float64Array(frameCount);
+  for (let f = 0; f < frameCount; f++) {
+    let sumSq = 0;
+    const base = f * frameSamples * 2;
+    for (let i = 0; i < frameSamples; i++) {
+      const s = pcm.readInt16LE(base + i * 2) / 32768;
+      sumSq += s * s;
+    }
+    energies[f] = Math.sqrt(sumSq / frameSamples);
+  }
+
+  // Positive onset energy flux
+  const flux = new Float64Array(frameCount);
+  for (let f = 1; f < frameCount; f++) {
+    const diff = energies[f] - energies[f - 1];
+    flux[f] = diff > 0 ? diff : 0;
+  }
+
+  const winRadius = 15; // +/-300 ms rolling mean window
+  const beatsSec: number[] = [];
+  let lastBeatTime = -minGapSec;
+
+  for (let f = 1; f < frameCount - 1; f++) {
+    if (flux[f] <= 0.01) continue;
+    if (flux[f] < flux[f - 1] || flux[f] < flux[f + 1]) continue;
+
+    const start = Math.max(0, f - winRadius);
+    const end = Math.min(frameCount - 1, f + winRadius);
+    let sum = 0;
+    for (let j = start; j <= end; j++) sum += flux[j];
+    const localMean = sum / (end - start + 1);
+
+    if (flux[f] >= localMean * thresholdMul) {
+      const t = Number((f * frameSec).toFixed(3));
+      if (t - lastBeatTime >= minGapSec) {
+        beatsSec.push(t);
+        lastBeatTime = t;
+        if (beatsSec.length >= maxBeats) break;
+      }
+    }
+  }
+
+  const intervalsSec: number[] = [];
+  for (let i = 1; i < beatsSec.length; i++) {
+    intervalsSec.push(Number((beatsSec[i] - beatsSec[i - 1]).toFixed(3)));
+  }
+
+  let estimatedBpm: number | null = null;
+  if (intervalsSec.length >= 2) {
+    const sorted = [...intervalsSec].sort((a, b) => a - b);
+    const median = sorted[Math.floor(sorted.length / 2)];
+    if (median > 0) {
+      let bpm = 60 / median;
+      while (bpm < 70) bpm *= 2;
+      while (bpm > 175) bpm /= 2;
+      estimatedBpm = Math.round(bpm);
+    }
+  }
+
+  return {
+    path: input,
+    durationSec: probe.durationSec,
+    estimatedBpm,
+    beatCount: beatsSec.length,
+    beatsSec,
+    intervalsSec: intervalsSec.slice(0, 40)
+  };
 }

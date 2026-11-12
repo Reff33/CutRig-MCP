@@ -5,6 +5,7 @@ import {
   addTextToCapCutDraft,
   createCapCutDraft,
   insertClipsToCapCutDraft,
+  listCapCutCachedAudio,
   listCapCutDrafts
 } from '../adapters/capcut.js';
 
@@ -136,5 +137,20 @@ export function registerPhase2Tools(server: McpServer): void {
       }
     },
     async (args) => okJson(await addTextToCapCutDraft(args))
+  );
+
+  server.registerTool(
+    'cutrig_capcut_list_audio',
+    {
+      title: 'List CapCut Cached Audio',
+      description:
+        'List locally cached/downloaded CapCut music tracks (.mp3/.wav) along with duration and companion .beat timestamps (if cached).',
+      inputSchema: {
+        cacheDir: z.string().optional().describe('Optional custom CapCut Cache/music directory'),
+        limit: z.number().int().min(1).max(100).optional(),
+        beatPreviewCount: z.number().int().min(5).max(200).optional()
+      }
+    },
+    async (args) => okJson(await listCapCutCachedAudio(args))
   );
 }

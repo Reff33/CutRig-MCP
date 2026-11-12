@@ -9,7 +9,7 @@ import { createCutRigServer } from '../dist/server.js';
 import { renderAfterEffects, runPremiereAction } from '../dist/adapters/adobe.js';
 import { runResolveAction } from '../dist/adapters/resolve.js';
 
-test('MCP server registers all 16 tools across Phases 0-3', async () => {
+test('MCP server registers all 18 tools across Phases 0-3', async () => {
   const server = createCutRigServer();
   const client = new Client({ name: 'cutrig-phase3-test', version: '0.1.0' });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -18,7 +18,7 @@ test('MCP server registers all 16 tools across Phases 0-3', async () => {
   const { tools } = await client.listTools();
   const names = tools.map((t) => t.name);
 
-  assert.equal(names.length, 16);
+  assert.equal(names.length, 18);
   for (const expected of [
     'cutrig_resolve_action',
     'cutrig_adobe_premiere',
