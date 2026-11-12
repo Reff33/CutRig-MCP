@@ -208,7 +208,83 @@ export async function createCapCutDraft(params: {
     writeFile(metaFile, JSON.stringify(meta, null, 2), 'utf8')
   ]);
 
+  await syncRootMetaInfo(baseDir, {
+    draftId,
+    draftName: safeName,
+    draftPath,
+    contentFile,
+    durationUs: 0,
+    nowUs
+  });
+
   return { draftId, name: safeName, draftPath, width, height, fps, backups };
+}
+
+async function syncRootMetaInfo(
+  baseDir: string,
+  entry: {
+    draftId: string;
+    draftName: string;
+    draftPath: string;
+    contentFile: string;
+    durationUs: number;
+    nowUs: number;
+  }
+): Promise<void> {
+  const rootMetaPath = path.join(baseDir, 'root_meta_info.json');
+  if (!(await fileExists(rootMetaPath))) return;
+
+  try {
+    const raw = await readFile(rootMetaPath, 'utf8');
+    const rootMeta = JSON.parse(raw) as {
+      all_draft_store?: Array<Record<string, unknown>>;
+      draft_ids?: number;
+      root_path?: string;
+    };
+    if (!Array.isArray(rootMeta.all_draft_store)) return;
+
+    await backupIfExists(rootMetaPath);
+
+    const foldSlash = entry.draftPath.replace(/\\/g, '/');
+    const rootSlash = baseDir.replace(/\\/g, '/');
+    const jsonFile = path.join(entry.draftPath, 'draft_content.json').replace(/\\/g, '/');
+    const existingIdx = rootMeta.all_draft_store.findIndex(
+      (item) =>
+        item.draft_id === entry.draftId ||
+        String(item.draft_fold_path || '').toLowerCase() === foldSlash.toLowerCase()
+    );
+
+    const record = {
+      ...(existingIdx >= 0 ? rootMeta.all_draft_store[existingIdx] : {}),
+      cloud_draft_cover: false,
+      cloud_draft_sync: false,
+      draft_cover: `${foldSlash}/draft_cover.jpg`,
+      draft_fold_path: foldSlash,
+      draft_id: entry.draftId,
+      draft_is_invisible: false,
+      draft_json_file: jsonFile,
+      draft_name: entry.draftName,
+      draft_root_path: rootSlash,
+      tm_draft_create:
+        existingIdx >= 0
+          ? rootMeta.all_draft_store[existingIdx].tm_draft_create ?? entry.nowUs
+          : entry.nowUs,
+      tm_draft_modified: entry.nowUs,
+      tm_draft_removed: 0,
+      tm_duration: entry.durationUs
+    };
+
+    if (existingIdx >= 0) {
+      rootMeta.all_draft_store[existingIdx] = record;
+    } else {
+      rootMeta.all_draft_store.unshift(record);
+      rootMeta.draft_ids = (rootMeta.draft_ids ?? rootMeta.all_draft_store.length) + 1;
+    }
+
+    await writeFile(rootMetaPath, JSON.stringify(rootMeta), 'utf8');
+  } catch {
+    // Non-fatal if user's CapCut root_meta_info.json has a custom schema
+  }
 }
 
 async function loadDraft(draftPath: string): Promise<{
@@ -407,15 +483,25 @@ export async function insertClipsToCapCutDraft(params: {
   }
 
   const totalUs = recomputeDurationUs(content);
+  const nowUs = Date.now() * 1000;
   const writes: Array<Promise<void>> = [
     writeFile(contentFile, JSON.stringify(content, null, 2), 'utf8')
   ];
   if (meta) {
     meta.tm_duration = totalUs;
-    meta.tm_draft_modified = Date.now() * 1000;
+    meta.tm_draft_modified = nowUs;
     writes.push(writeFile(metaFile, JSON.stringify(meta, null, 2), 'utf8'));
   }
   await Promise.all(writes);
+
+  await syncRootMetaInfo(path.dirname(resolveSafePath(params.draftPath)), {
+    draftId: content.id,
+    draftName: content.name,
+    draftPath: resolveSafePath(params.draftPath),
+    contentFile,
+    durationUs: totalUs,
+    nowUs
+  });
 
   return {
     draftPath: resolveSafePath(params.draftPath),
@@ -504,15 +590,25 @@ export async function addTextToCapCutDraft(params: {
   }
 
   const totalUs = recomputeDurationUs(content);
+  const nowUs = Date.now() * 1000;
   const writes: Array<Promise<void>> = [
     writeFile(contentFile, JSON.stringify(content, null, 2), 'utf8')
   ];
   if (meta) {
     meta.tm_duration = totalUs;
-    meta.tm_draft_modified = Date.now() * 1000;
+    meta.tm_draft_modified = nowUs;
     writes.push(writeFile(metaFile, JSON.stringify(meta, null, 2), 'utf8'));
   }
   await Promise.all(writes);
+
+  await syncRootMetaInfo(path.dirname(resolveSafePath(params.draftPath)), {
+    draftId: content.id,
+    draftName: content.name,
+    draftPath: resolveSafePath(params.draftPath),
+    contentFile,
+    durationUs: totalUs,
+    nowUs
+  });
 
   return {
     draftPath: resolveSafePath(params.draftPath),

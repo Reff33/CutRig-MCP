@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -108,8 +108,14 @@ test(
       assert.equal(existsSync(burned.outputPath), true);
       assert.equal(burned.media.video?.width, 640);
 
-      // 3. CapCut Draft lifecycle
+      // 3. CapCut Draft lifecycle (including root_meta_info.json registration)
       const draftsRoot = path.join(tmp, 'capcut_drafts');
+      mkdirSync(draftsRoot, { recursive: true });
+      writeFileSync(
+        path.join(draftsRoot, 'root_meta_info.json'),
+        JSON.stringify({ all_draft_store: [], draft_ids: 0, root_path: draftsRoot }),
+        'utf8'
+      );
       const created = await createCapCutDraft({
         name: 'Promo_Test',
         draftsDir: draftsRoot,
@@ -151,6 +157,11 @@ test(
       assert.equal(content.materials.texts.length, 1);
       assert.equal(content.tracks.find((t) => t.type === 'video').segments.length, 1);
       assert.equal(content.tracks.find((t) => t.type === 'text').segments.length, 1);
+
+      const rootMeta = JSON.parse(readFileSync(path.join(draftsRoot, 'root_meta_info.json'), 'utf8'));
+      assert.equal(rootMeta.all_draft_store.length, 1);
+      assert.equal(rootMeta.all_draft_store[0].draft_name, 'Promo_Test');
+      assert.ok(rootMeta.all_draft_store[0].tm_duration >= 1_900_000);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
