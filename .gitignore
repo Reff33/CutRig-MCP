@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.env
+.env.*
+*.log
+*.bak
+cutrig-out/
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db

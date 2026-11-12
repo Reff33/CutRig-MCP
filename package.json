@@ -1,0 +1,51 @@
+{
+  "name": "cutrig-mcp",
+  "version": "0.1.0",
+  "description": "Cross-platform MCP server & AI skill for automated video editing, timeline assembly, AI captions, and NLE bridges (FFmpeg, CapCut, DaVinci Resolve, Premiere Pro, After Effects).",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "cutrig-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "skills",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepare": "npm run build",
+    "typecheck": "tsc --noEmit",
+    "start": "node dist/index.js",
+    "test": "npm run build && node --test tests/*.test.mjs"
+  },
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "video-editing",
+    "ffmpeg",
+    "capcut",
+    "davinci-resolve",
+    "premiere-pro",
+    "after-effects",
+    "claude-code"
+  ],
+  "author": "Reff33",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Reff33/CutRig-MCP.git"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^7.0.2"
+  }
+}
