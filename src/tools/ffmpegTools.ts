@@ -1,6 +1,7 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import {
+  batchAnalyzeClips,
   concatClips,
   detectBeats,
   extractPreviewFrames,
@@ -139,5 +140,23 @@ export function registerFfmpegTools(server: McpServer): void {
       }
     },
     async (args) => okJson(await detectBeats(args))
+  );
+
+  server.registerTool(
+    'cutrig_batch_analyze_clips',
+    {
+      title: 'Batch Analyze Clips & Contact Sheet',
+      description:
+        'Probe all video clips in a directory or path list in parallel and generate ONE labeled grid contact sheet image for rapid visual sequencing in a single Read call.',
+      inputSchema: {
+        directory: z.string().optional().describe('Folder containing video clips to scan'),
+        inputPaths: z.array(z.string()).optional().describe('Explicit list of video file paths'),
+        outputImagePath: z.string().optional().describe('Optional output contact sheet .jpg path'),
+        columns: z.number().int().min(1).max(6).optional(),
+        tileWidth: z.number().int().min(160).max(640).optional(),
+        samplePosition: z.number().min(0.05).max(0.95).optional().describe('Relative timestamp 0.05-0.95 to sample each clip (default 0.35)')
+      }
+    },
+    async (args) => okJson(await batchAnalyzeClips(args))
   );
 }

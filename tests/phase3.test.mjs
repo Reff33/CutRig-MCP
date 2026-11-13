@@ -9,7 +9,7 @@ import { createCutRigServer } from '../dist/server.js';
 import { renderAfterEffects, runPremiereAction } from '../dist/adapters/adobe.js';
 import { runResolveAction } from '../dist/adapters/resolve.js';
 
-test('MCP server registers all 18 tools across Phases 0-3', async () => {
+test('MCP server registers all 25 tools across Phases 0-3', async () => {
   const server = createCutRigServer();
   const client = new Client({ name: 'cutrig-phase3-test', version: '0.1.0' });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -18,11 +18,13 @@ test('MCP server registers all 18 tools across Phases 0-3', async () => {
   const { tools } = await client.listTools();
   const names = tools.map((t) => t.name);
 
-  assert.equal(names.length, 18);
+  assert.equal(names.length, 25);
   for (const expected of [
     'cutrig_resolve_action',
     'cutrig_adobe_premiere',
-    'cutrig_ae_render'
+    'cutrig_ae_render',
+    'cutrig_capcut_validate_draft',
+    'cutrig_capcut_restore_backup'
   ]) {
     assert.ok(names.includes(expected), `Missing Phase 3 tool: ${expected}`);
   }

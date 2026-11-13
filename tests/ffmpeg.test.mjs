@@ -8,6 +8,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { createCutRigServer } from '../dist/server.js';
 import {
+  batchAnalyzeClips,
   concatClips,
   detectBeats,
   extractPreviewFrames,
@@ -43,7 +44,8 @@ test('MCP server registers all Phase 1 FFmpeg tools', async () => {
     'cutrig_reframe',
     'cutrig_audio_mix',
     'cutrig_preview_frames',
-    'cutrig_detect_beats'
+    'cutrig_detect_beats',
+    'cutrig_batch_analyze_clips'
   ]) {
     assert.ok(names.includes(expected), `Missing tool: ${expected}`);
   }
@@ -209,6 +211,20 @@ test(
         beats.estimatedBpm !== null && beats.estimatedBpm >= 110 && beats.estimatedBpm <= 130,
         `Expected ~120 BPM, got ${beats.estimatedBpm}`
       );
+
+      // 8. Batch analyze clips & contact sheet
+      const sheetPath = path.join(tmp, 'sheet.jpg');
+      const batch = await batchAnalyzeClips({
+        inputPaths: [clipA, clipSilent],
+        outputImagePath: sheetPath,
+        columns: 2,
+        tileWidth: 240,
+        workspaceRoot: tmp
+      });
+      assert.equal(batch.clipCount, 2);
+      assert.equal(existsSync(batch.contactSheetPath), true);
+      assert.equal(batch.clips[0].index, 1);
+      assert.equal(batch.clips[1].hasAudio, false);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

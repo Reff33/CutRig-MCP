@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
-import { mkdir, readdir } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { runCommand } from '../utils/exec.js';
 import { prepareOutputPath, resolveSafePath } from '../utils/safety.js';
@@ -410,34 +411,168 @@ export async function extractPreviewFrames(params: {
   const count = Math.min(12, Math.max(1, params.count ?? 4));
   const maxWidth = Math.min(1920, Math.max(240, params.maxWidth ?? 640));
   const duration = Math.max(0.2, probe.durationSec || 1);
-  const fps = Number((count / duration).toFixed(4));
 
   await mkdir(outDir, { recursive: true });
-  const pattern = path.join(outDir, 'frame_%02d.png');
+  const files: string[] = [];
 
-  const res = await runCommand(
-    'ffmpeg',
-    [
-      '-y',
-      '-i',
-      input,
-      '-vf',
-      `fps=${fps},scale=${maxWidth}:-2`,
-      '-frames:v',
-      String(count),
-      pattern
-    ],
-    60_000
+  // Fast keyframe seeking (-ss before -i) avoids decoding entire 4K videos
+  await mapWithConcurrency(
+    Array.from({ length: count }, (_, idx) => idx),
+    4,
+    async (idx) => {
+      const seekSec = Math.max(0, Math.min(duration - 0.05, ((idx + 0.5) / count) * duration));
+      const outPath = path.join(outDir, `frame_${String(idx + 1).padStart(2, '0')}.png`);
+      const res = await runCommand(
+        'ffmpeg',
+        [
+          '-y',
+          '-ss',
+          seekSec.toFixed(3),
+          '-i',
+          input,
+          '-frames:v',
+          '1',
+          '-vf',
+          `scale=${maxWidth}:-2`,
+          outPath
+        ],
+        30_000
+      );
+      if (!res.ok) throw new Error(`ffmpeg preview frame failed: ${res.stderr}`);
+      files.push(outPath);
+    }
   );
 
-  if (!res.ok) throw new Error(`ffmpeg preview frames failed: ${res.stderr}`);
-
-  const files = (await readdir(outDir))
-    .filter((f) => /^frame_\d+\.png$/i.test(f))
-    .sort()
-    .map((f) => path.join(outDir, f));
-
+  files.sort();
   return { outputDir: outDir, count: files.length, files };
+}
+
+const VIDEO_EXTS = new Set(['.mp4', '.mov', '.mkv', '.webm', '.avi', '.m4v']);
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (true) {
+      const idx = next++;
+      if (idx >= items.length) break;
+      results[idx] = await fn(items[idx], idx);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+export async function batchAnalyzeClips(params: {
+  directory?: string;
+  inputPaths?: string[];
+  outputImagePath?: string;
+  columns?: number;
+  tileWidth?: number;
+  samplePosition?: number;
+  workspaceRoot?: string;
+}) {
+  let rawPaths: string[] = [];
+  let defaultBaseDir: string | undefined;
+
+  if (params.inputPaths && params.inputPaths.length > 0) {
+    rawPaths = params.inputPaths.map((p) => resolveSafePath(p, params.workspaceRoot));
+    defaultBaseDir = path.dirname(rawPaths[0]);
+  } else if (params.directory) {
+    const dir = resolveSafePath(params.directory, params.workspaceRoot);
+    defaultBaseDir = dir;
+    const entries = await readdir(dir, { withFileTypes: true });
+    rawPaths = entries
+      .filter((e) => e.isFile() && VIDEO_EXTS.has(path.extname(e.name).toLowerCase()))
+      .map((e) => path.join(dir, e.name))
+      .sort((a, b) => a.localeCompare(b));
+  } else {
+    throw new Error('Provide either directory or inputPaths.');
+  }
+
+  if (rawPaths.length === 0) {
+    throw new Error('No video files found to analyze.');
+  }
+
+  const columns = Math.min(6, Math.max(1, params.columns ?? 4));
+  const rawTileWidth = Math.min(640, Math.max(160, params.tileWidth ?? 320));
+  const tileWidth = Math.floor(rawTileWidth / 2) * 2;
+  const tileHeight = Math.max(90, Math.floor(((tileWidth * 9) / 16) / 2) * 2);
+  const samplePos = Math.min(0.95, Math.max(0.05, params.samplePosition ?? 0.35));
+
+  const sheetTarget =
+    params.outputImagePath ?? path.join(defaultBaseDir!, '_cutrig_contact_sheet.jpg');
+  const { outputPath: contactSheetPath } = await prepareOutputPath(sheetTarget, rawPaths, {
+    workspaceRoot: params.workspaceRoot,
+    overwrite: true,
+    createDir: true
+  });
+
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), 'cutrig-sheet-'));
+  try {
+    const analyzed = await mapWithConcurrency(rawPaths, 6, async (clipPath, idx) => {
+      const probe = await probeMedia(clipPath, params.workspaceRoot);
+      const seekSec = Math.max(0, (probe.durationSec || 1) * samplePos);
+      const thumbPath = path.join(tmpDir, `tile_${String(idx + 1).padStart(3, '0')}.jpg`);
+      const vf = `scale=${tileWidth}:${tileHeight}:force_original_aspect_ratio=decrease:flags=fast_bilinear,pad=${tileWidth}:${tileHeight}:(ow-iw)/2:(oh-ih)/2,setsar=1`;
+
+      const res = await runCommand(
+        'ffmpeg',
+        ['-y', '-ss', seekSec.toFixed(3), '-i', clipPath, '-frames:v', '1', '-vf', vf, '-q:v', '4', thumbPath],
+        30_000
+      );
+      if (!res.ok) {
+        throw new Error(`ffmpeg thumbnail failed for ${clipPath}: ${res.stderr}`);
+      }
+
+      return {
+        index: idx + 1,
+        row: Math.floor(idx / columns) + 1,
+        col: (idx % columns) + 1,
+        name: path.basename(clipPath),
+        path: clipPath,
+        durationSec: probe.durationSec,
+        width: probe.video?.width ?? 0,
+        height: probe.video?.height ?? 0,
+        fps: probe.video?.fps ?? 0,
+        hasAudio: probe.audio !== null
+      };
+    });
+
+    const rows = Math.ceil(analyzed.length / columns);
+    const tileRes = await runCommand(
+      'ffmpeg',
+      [
+        '-y',
+        '-f',
+        'image2',
+        '-i',
+        path.join(tmpDir, 'tile_%03d.jpg'),
+        '-vf',
+        `tile=${columns}x${rows}`,
+        '-q:v',
+        '3',
+        contactSheetPath
+      ],
+      60_000
+    );
+    if (!tileRes.ok) {
+      throw new Error(`ffmpeg contact sheet tile failed: ${tileRes.stderr}`);
+    }
+
+    return {
+      clipCount: analyzed.length,
+      contactSheetPath,
+      grid: { columns, rows, order: 'left-to-right, top-to-bottom' },
+      clips: analyzed
+    };
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true });
+  }
 }
 
 function readPcmS16Mono(inputPath: string, sampleRate = 8000, maxSec = 300): Promise<Buffer> {
